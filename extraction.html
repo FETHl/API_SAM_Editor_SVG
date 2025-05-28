@@ -1,0 +1,891 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Extract and refine image contours using SAM and CRF">
+    <meta name="author" content="FETHl">
+    <title>SAM-EdgeRefiner - Contour Extraction</title>
+    <style>
+        :root {
+            --primary-color: #2c3e50;
+            --secondary-color: #3498db;
+            --secondary-dark: #2980b9;
+            --text-color: #333;
+            --background-color: #f8f9fa;
+            --card-background: #ffffff;
+            --border-color: #ddd;
+            --success-bg: #d4edda;
+            --success-text: #155724;
+            --error-bg: #f8d7da;
+            --error-text: #721c24;
+            --disabled-color: #95a5a6;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 0;
+            color: var(--text-color);
+            background-color: var(--background-color);
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            background-color: var(--primary-color);
+            color: white;
+            padding: 1rem;
+            text-align: center;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        footer {
+            background-color: var(--primary-color);
+            color: white;
+            padding: 1rem;
+            text-align: center;
+            font-size: 0.9rem;
+            margin-top: 2rem;
+        }
+
+        .card {
+            background-color: var(--card-background);
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .row {
+            display: flex;
+            flex-wrap: wrap;
+            margin: 0 -10px;
+        }
+
+        .col {
+            flex: 1;
+            padding: 0 10px;
+            min-width: 300px;
+        }
+
+        h1, h2, h3 {
+            color: var(--primary-color);
+        }
+
+        button, .button {
+            background-color: var(--secondary-color);
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.3s, transform 0.1s;
+        }
+
+        button:hover, .button:hover {
+            background-color: var(--secondary-dark);
+        }
+
+        button:active, .button:active {
+            transform: translateY(1px);
+        }
+
+        button:disabled {
+            background-color: var(--disabled-color);
+            cursor: not-allowed;
+        }
+
+        button.active {
+            background-color: var(--primary-color);
+            font-weight: bold;
+        }
+
+        .button-group {
+            margin: 15px 0;
+        }
+
+        .button-group button {
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+
+        input[type="file"] {
+            display: block;
+            margin: 10px 0;
+            padding: 10px;
+            width: 100%;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+        }
+
+        .image-container {
+            position: relative;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 10px;
+            background-color: #f1f1f1;
+            min-height: 200px;
+        }
+
+        canvas, img {
+            display: block;
+            max-width: 100%;
+            margin: 0 auto;
+        }
+
+        .controls {
+            margin: 15px 0;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 500;
+        }
+
+        .checkbox-group {
+            margin: 10px 0;
+        }
+
+        .loading {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(255, 255, 255, 0.8);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 18px;
+            z-index: 10;
+            display: none;
+        }
+
+        .loading::after {
+            content: "";
+            width: 30px;
+            height: 30px;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid var(--secondary-color);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .message {
+            padding: 15px;
+            border-radius: 4px;
+            margin: 15px 0;
+            display: none;
+        }
+
+        .success-message {
+            background-color: var(--success-bg);
+            color: var(--success-text);
+        }
+
+        .error-message {
+            background-color: var(--error-bg);
+            color: var(--error-text);
+        }
+
+        .info-message {
+            background-color: #d1ecf1;
+            color: #0c5460;
+        }
+
+        .status-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+            font-size: 0.9rem;
+            color: #666;
+            margin-bottom: 20px;
+        }
+
+        .tooltip {
+            position: relative;
+            display: inline-block;
+            cursor: help;
+            margin-left: 5px;
+        }
+
+        .tooltip .tooltiptext {
+            visibility: hidden;
+            width: 200px;
+            background-color: #555;
+            color: #fff;
+            text-align: center;
+            border-radius: 6px;
+            padding: 5px;
+            position: absolute;
+            z-index: 1;
+            bottom: 125%;
+            left: 50%;
+            margin-left: -100px;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .tooltip:hover .tooltiptext {
+            visibility: visible;
+            opacity: 1;
+        }
+        
+        .instructions {
+            background-color: #f8f9fa;
+            border-left: 4px solid var(--secondary-color);
+            padding: 10px 15px;
+            margin: 15px 0;
+            font-size: 0.95rem;
+        }
+        
+        @media (max-width: 768px) {
+            .row {
+                flex-direction: column;
+            }
+            
+            .col {
+                width: 100%;
+                margin-bottom: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>SAM-EdgeRefiner</h1>
+        <p>AvhFilms Contour Extraction</p>
+    </header>
+
+    <div class="container">
+        <div class="status-bar">
+            <div>
+                <span id="api-status">Checking API connection...</span>
+            </div>
+            <div>
+                <span id="current-date">2025-05-27 07:15:44</span> | 
+                <span id="current-user">FETHl</span>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Contour Extraction</h2>
+            <p>Upload an image and use SAM to extract precise contours with optional edge refinement.</p>
+
+            <div class="instructions">
+                <strong>Instructions:</strong>
+                <ol>
+                    <li>Upload an image using the file selector</li>
+                    <li>Choose a segmentation method:
+                        <ul>
+                            <li><strong>Automatic:</strong> Let SAM find contours without guidance</li>
+                            <li><strong>Click Points:</strong> Click on objects you want to extract</li>
+                            <li><strong>Bounding Box:</strong> Draw a box around objects to extract</li>
+                        </ul>
+                    </li>
+                    <li>Enable edge refinement for more precise contours (recommended)</li>
+                    <li>Click "Extract Contours" and wait for results</li>
+                    <li>Use the editor to further refine contours if needed</li>
+                </ol>
+            </div>
+
+            <div class="row">
+                <div class="col">
+                    <h3>Input Image</h3>
+                    <input type="file" id="imageUpload" accept="image/*" aria-label="Upload image">
+
+                    <div class="controls">
+                        <h4>Prompt Type</h4>
+                        <div class="button-group" role="group" aria-label="Segmentation method">
+                            <button id="automaticBtn" class="active" aria-pressed="true">Automatic</button>
+                            <button id="clickPromptBtn" aria-pressed="false">Click Points</button>
+                            <button id="boxPromptBtn" aria-pressed="false">Bounding Box</button>
+                        </div>
+
+                        <div class="checkbox-group">
+                            <label for="refineEdges">
+                                <input type="checkbox" id="refineEdges" checked>
+                                Refine Edges (CRF)
+                                <span class="tooltip">ⓘ
+                                    <span class="tooltiptext">Applies Conditional Random Fields to improve contour precision</span>
+                                </span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="image-container">
+                        <canvas id="imageCanvas" aria-label="Image preview with segmentation prompts"></canvas>
+                        <div class="loading" id="loadingIndicator">Processing...</div>
+                    </div>
+
+                    <div class="button-group">
+                        <button id="resetBtn">Reset</button>
+                        <button id="extractBtn" disabled>Extract Contours</button>
+                    </div>
+
+                    <div id="successMessage" class="message success-message" role="alert"></div>
+                    <div id="errorMessage" class="message error-message" role="alert"></div>
+                    <div id="infoMessage" class="message info-message" role="status"></div>
+                </div>
+
+                <div class="col">
+                    <h3>Result</h3>
+                    <div class="image-container">
+                        <img id="resultImage" alt="Segmentation result" style="display: none;">
+                    </div>
+
+                    <div class="controls" id="resultControls" style="display: none;">
+                        <div class="button-group">
+                            <button id="viewOverlayBtn">View Overlay</button>
+                            <button id="viewMaskBtn">View Mask</button>
+                            <button id="editContoursBtn">Edit Contours</button>
+                            <button id="downloadMaskBtn">Download Mask</button>
+                        </div>
+                        <p>Extracted contours: <span id="contourCount">0</span></p>
+                        <p id="extractionMetadata" class="metadata"></p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer>
+        <p>SAM-EdgeRefiner &copy; 2025 | v1.0.0 | Developed by FETHl</p>
+    </footer>
+
+    <script>
+        // Configuration - Can be overridden by environment
+        const DEFAULT_CONFIG = {
+            extractionApiUrl: 'http://localhost:5001',
+            editorApiUrl: 'http://localhost:5002',
+            maxPointPrompts: 10,
+            retryAttempts: 3,
+            retryDelay: 1000
+        };
+        
+        // Try to load config from a global variable if available
+        const CONFIG = window.APP_CONFIG || DEFAULT_CONFIG;
+        
+        // DOM Elements
+        const elements = {
+            // Status elements
+            apiStatus: document.getElementById('api-status'),
+            currentDate: document.getElementById('current-date'),
+            currentUser: document.getElementById('current-user'),
+            
+            // Input elements
+            imageUpload: document.getElementById('imageUpload'),
+            imageCanvas: document.getElementById('imageCanvas'),
+            extractBtn: document.getElementById('extractBtn'),
+            resetBtn: document.getElementById('resetBtn'),
+            refineEdges: document.getElementById('refineEdges'),
+            
+            // Prompt type buttons
+            automaticBtn: document.getElementById('automaticBtn'),
+            clickPromptBtn: document.getElementById('clickPromptBtn'),
+            boxPromptBtn: document.getElementById('boxPromptBtn'),
+            
+            // Result elements
+            resultImage: document.getElementById('resultImage'),
+            resultControls: document.getElementById('resultControls'),
+            contourCount: document.getElementById('contourCount'),
+            extractionMetadata: document.getElementById('extractionMetadata'),
+            
+            // Action buttons
+            viewOverlayBtn: document.getElementById('viewOverlayBtn'),
+            viewMaskBtn: document.getElementById('viewMaskBtn'),
+            editContoursBtn: document.getElementById('editContoursBtn'),
+            downloadMaskBtn: document.getElementById('downloadMaskBtn'),
+            
+            // Messages
+            loadingIndicator: document.getElementById('loadingIndicator'),
+            successMessage: document.getElementById('successMessage'),
+            errorMessage: document.getElementById('errorMessage'),
+            infoMessage: document.getElementById('infoMessage')
+        };
+        
+        // Canvas context
+        const ctx = elements.imageCanvas.getContext('2d');
+        
+        // Application state
+        const state = {
+            currentJobId: null,
+            promptMode: 'automatic',
+            points: [],
+            box: null,
+            boxStart: null,
+            isDrawing: false,
+            originalImage: null,
+            retryCount: 0
+        };
+        
+        // Update date and user info
+        function updateSystemInfo() {
+            // These would normally be set from server data
+            elements.currentDate.textContent = '2025-05-27 07:15:44';
+            elements.currentUser.textContent = 'FETHl';
+        }
+        
+        // Check API health
+        async function checkApiHealth() {
+            try {
+                elements.apiStatus.textContent = 'Connecting to API...';
+                
+                const response = await fetch(`${CONFIG.extractionApiUrl}/health`);
+                const data = await response.json();
+                
+                if (data.status === 'healthy') {
+                    elements.apiStatus.textContent = '✓ API Connected';
+                    elements.apiStatus.style.color = '#28a745';
+                    showInfoMessage(`Connected to extraction API. Model loaded: ${data.model_loaded ? 'Yes' : 'No'}`);
+                    return true;
+                } else {
+                    throw new Error('API reported unhealthy status');
+                }
+            } catch (error) {
+                elements.apiStatus.textContent = '✗ API Disconnected';
+                elements.apiStatus.style.color = '#dc3545';
+                showError('Failed to connect to the extraction API. Please check that the server is running.');
+                console.error('API health check failed:', error);
+                return false;
+            }
+        }
+        
+        // Image upload handler
+        function handleImageUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            // Validate file type
+            const validTypes = ['image/jpeg', 'image/png', 'image/bmp', 'image/tiff'];
+            if (!validTypes.includes(file.type)) {
+                showError('Please upload a valid image file (JPEG, PNG, BMP, or TIFF).');
+                return;
+            }
+            
+            // Validate file size (max 10MB)
+            if (file.size > 10 * 1024 * 1024) {
+                showError('Image file is too large. Maximum size is 10MB.');
+                return;
+            }
+            
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = new Image();
+                img.onload = function() {
+                    // Store original image for resets
+                    state.originalImage = img;
+                    
+                    // Set canvas dimensions
+                    elements.imageCanvas.width = img.width;
+                    elements.imageCanvas.height = img.height;
+                    
+                    // Draw image
+                    ctx.drawImage(img, 0, 0);
+                    
+                    // Reset prompts and enable extraction
+                    resetPrompts();
+                    elements.extractBtn.disabled = false;
+                    
+                    showInfoMessage(`Image loaded: ${file.name} (${img.width}x${img.height}px)`);
+                };
+                img.src = e.target.result;
+            };
+            reader.onerror = function() {
+                showError('Error reading the image file.');
+            };
+            reader.readAsDataURL(file);
+        }
+        
+        // Canvas click handler for point prompts
+        function handleCanvasClick(event) {
+            if (!elements.imageCanvas.width || state.promptMode === 'automatic') return;
+            
+            const rect = elements.imageCanvas.getBoundingClientRect();
+            const scaleX = elements.imageCanvas.width / rect.width;
+            const scaleY = elements.imageCanvas.height / rect.height;
+            
+            const x = (event.clientX - rect.left) * scaleX;
+            const y = (event.clientY - rect.top) * scaleY;
+            
+            if (state.promptMode === 'click') {
+                // Limit number of points
+                if (state.points.length >= CONFIG.maxPointPrompts) {
+                    showInfoMessage(`Maximum ${CONFIG.maxPointPrompts} points allowed. Reset to start over.`);
+                    return;
+                }
+                
+                state.points.push([x, y]);
+                drawPoints();
+                
+                showInfoMessage(`Point ${state.points.length} added at (${Math.round(x)}, ${Math.round(y)})`);
+            } else if (state.promptMode === 'box') {
+                state.isDrawing = true;
+                state.boxStart = [x, y];
+                state.box = [x, y, x, y];
+                drawBox();
+                
+                showInfoMessage('Drawing bounding box. Click and drag, then release.');
+            }
+        }
+        
+        // Canvas mousemove handler for box drawing
+        function handleCanvasMouseMove(event) {
+            if (!state.isDrawing || state.promptMode !== 'box') return;
+            
+            const rect = elements.imageCanvas.getBoundingClientRect();
+            const scaleX = elements.imageCanvas.width / rect.width;
+            const scaleY = elements.imageCanvas.height / rect.height;
+            
+            const x = (event.clientX - rect.left) * scaleX;
+            const y = (event.clientY - rect.top) * scaleY;
+            
+            state.box[2] = x;
+            state.box[3] = y;
+            drawBox();
+        }
+        
+        // Canvas mouseup handler for finishing box drawing
+        function handleCanvasMouseUp() {
+            if (state.promptMode === 'box' && state.isDrawing) {
+                state.isDrawing = false;
+                
+                // Normalize box coordinates (ensure x1<x2, y1<y2)
+                const [x1, y1, x2, y2] = state.box;
+                state.box = [
+                    Math.min(x1, x2),
+                    Math.min(y1, y2),
+                    Math.max(x1, x2),
+                    Math.max(y1, y2)
+                ];
+                
+                drawBox();
+                
+                const width = Math.abs(state.box[2] - state.box[0]);
+                const height = Math.abs(state.box[3] - state.box[1]);
+                
+                showInfoMessage(`Bounding box drawn: ${Math.round(width)}x${Math.round(height)}px`);
+            }
+        }
+        
+        // Draw points on canvas
+        function drawPoints() {
+            if (!elements.imageCanvas.width) return;
+            
+            // Redraw the original image
+            ctx.drawImage(state.originalImage, 0, 0);
+            
+            // Draw the points
+            state.points.forEach((point, index) => {
+                ctx.beginPath();
+                ctx.arc(point[0], point[1], 5, 0, 2 * Math.PI);
+                ctx.fillStyle = 'red';
+                ctx.fill();
+                ctx.strokeStyle = 'white';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+                
+                // Number the points
+                ctx.fillStyle = 'white';
+                ctx.strokeStyle = 'black';
+                ctx.lineWidth = 3;
+                ctx.font = '12px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.strokeText(index + 1, point[0], point[1]);
+                ctx.fillText(index + 1, point[0], point[1]);
+            });
+        }
+        
+        // Draw bounding box on canvas
+        function drawBox() {
+            if (!elements.imageCanvas.width || !state.box) return;
+            
+            // Redraw the original image
+            ctx.drawImage(state.originalImage, 0, 0);
+            
+            // Draw the box
+            const [x1, y1, x2, y2] = state.box;
+            const width = x2 - x1;
+            const height = y2 - y1;
+            
+            ctx.beginPath();
+            ctx.rect(x1, y1, width, height);
+            ctx.strokeStyle = 'red';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            
+            // Add handle circles at corners
+            const corners = [
+                [x1, y1], [x2, y1], 
+                [x1, y2], [x2, y2]
+            ];
+            
+            corners.forEach(([x, y]) => {
+                ctx.beginPath();
+                ctx.arc(x, y, 4, 0, 2 * Math.PI);
+                ctx.fillStyle = 'white';
+                ctx.fill();
+                ctx.strokeStyle = 'red';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            });
+        }
+        
+        // Reset prompts
+        function resetPrompts() {
+            state.points = [];
+            state.box = null;
+            state.isDrawing = false;
+            
+            hideMessages();
+            
+            // Redraw the canvas with original image
+            if (state.originalImage) {
+                ctx.drawImage(state.originalImage, 0, 0);
+            }
+        }
+        
+        // Set prompt mode
+        function setPromptMode(mode) {
+            state.promptMode = mode;
+            
+            // Update UI
+            elements.automaticBtn.classList.remove('active');
+            elements.automaticBtn.setAttribute('aria-pressed', 'false');
+            elements.clickPromptBtn.classList.remove('active');
+            elements.clickPromptBtn.setAttribute('aria-pressed', 'false');
+            elements.boxPromptBtn.classList.remove('active');
+            elements.boxPromptBtn.setAttribute('aria-pressed', 'false');
+            
+            switch(mode) {
+                case 'automatic':
+                    elements.automaticBtn.classList.add('active');
+                    elements.automaticBtn.setAttribute('aria-pressed', 'true');
+                    showInfoMessage('Automatic mode: SAM will segment the entire image');
+                    break;
+                case 'click':
+                    elements.clickPromptBtn.classList.add('active');
+                    elements.clickPromptBtn.setAttribute('aria-pressed', 'true');
+                    showInfoMessage('Click mode: Click on objects you want to extract');
+                    break;
+                case 'box':
+                    elements.boxPromptBtn.classList.add('active');
+                    elements.boxPromptBtn.setAttribute('aria-pressed', 'true');
+                    showInfoMessage('Box mode: Draw a box around objects to extract');
+                    break;
+            }
+            
+            // Reset existing prompts
+            resetPrompts();
+        }
+        
+        // Extract contours
+        async function extractContours() {
+            try {
+                // Show loading indicator
+                elements.loadingIndicator.style.display = 'flex';
+                hideMessages();
+                
+                // Create form data
+                const formData = new FormData();
+                
+                // Get image blob from canvas
+                const blob = await new Promise(resolve => {
+                    elements.imageCanvas.toBlob(resolve, 'image/png');
+                });
+                
+                // Add form data
+                formData.append('image', blob, 'image.png');
+                formData.append('prompt_type', state.promptMode);
+                formData.append('refine', elements.refineEdges.checked);
+                
+                // Add prompt-specific data
+                if (state.promptMode === 'click' && state.points.length > 0) {
+                    // Flatten points array
+                    const flatPoints = state.points.reduce((acc, point) => [...acc, point[0], point[1]], []);
+                    formData.append('points', flatPoints.join(','));
+                } else if (state.promptMode === 'box' && state.box) {
+                    formData.append('box', state.box.join(','));
+                }
+                
+                // Send request to API
+                const response = await fetch(`${CONFIG.extractionApiUrl}/extract`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Server responded with status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+                
+                // Display result
+                elements.resultImage.src = `data:image/png;base64,${data.mask_base64}`;
+                elements.resultImage.style.display = 'block';
+                
+                // Show controls and update metadata
+                elements.resultControls.style.display = 'block';
+                elements.contourCount.textContent = data.contours.length;
+                
+                // Store job ID
+                state.currentJobId = data.job_id;
+                
+                // Update metadata display
+                const metadata = data.metadata || {};
+                elements.extractionMetadata.innerHTML = `
+                    <strong>Date:</strong> ${metadata.date || 'N/A'}<br>
+                    <strong>Method:</strong> ${metadata.prompt_type || state.promptMode}<br>
+                    <strong>Edge Refinement:</strong> ${metadata.refinement ? 'Yes' : 'No'}
+                `;
+                
+                showSuccess(`Extraction successful with ${data.contours.length} contours detected.`);
+                
+                // Reset retry counter on success
+                state.retryCount = 0;
+                
+            } catch (error) {
+                console.error('Extraction error:', error);
+                
+                // Implement retry logic for network errors
+                if (state.retryCount < CONFIG.retryAttempts && error.name === 'TypeError') {
+                    state.retryCount++;
+                    showInfoMessage(`Connection error. Retrying (${state.retryCount}/${CONFIG.retryAttempts})...`);
+                    
+                    // Wait before retrying
+                    await new Promise(resolve => setTimeout(resolve, CONFIG.retryDelay));
+                    return extractContours();
+                }
+                
+                showError(`Error extracting contours: ${error.message}`);
+            } finally {
+                elements.loadingIndicator.style.display = 'none';
+            }
+        }
+        
+        // Download mask as PNG
+        function downloadMask() {
+            if (!state.currentJobId) return;
+            
+            const link = document.createElement('a');
+            link.href = `${CONFIG.extractionApiUrl}/mask/${state.currentJobId}`;
+            link.download = `mask_${state.currentJobId}.png`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+        
+        // Reset the application
+        function resetApplication() {
+            resetPrompts();
+            elements.resultImage.style.display = 'none';
+            elements.resultControls.style.display = 'none';
+            state.currentJobId = null;
+            
+            showInfoMessage('Application reset. Upload a new image or try different prompts.');
+        }
+        
+        // Message display functions
+        function hideMessages() {
+            elements.successMessage.style.display = 'none';
+            elements.errorMessage.style.display = 'none';
+            elements.infoMessage.style.display = 'none';
+        }
+        
+        function showError(message) {
+            elements.errorMessage.textContent = message;
+            elements.errorMessage.style.display = 'block';
+            elements.successMessage.style.display = 'none';
+            elements.infoMessage.style.display = 'none';
+            console.error(message);
+        }
+        
+        function showSuccess(message) {
+            elements.successMessage.textContent = message;
+            elements.successMessage.style.display = 'block';
+            elements.errorMessage.style.display = 'none';
+            elements.infoMessage.style.display = 'none';
+        }
+        
+        function showInfoMessage(message) {
+            elements.infoMessage.textContent = message;
+            elements.infoMessage.style.display = 'block';
+        }
+        
+        // Initialize application
+        function initApp() {
+            // Update system info
+            updateSystemInfo();
+            
+            // Check API health
+            checkApiHealth();
+            
+            // Add event listeners
+            elements.imageUpload.addEventListener('change', handleImageUpload);
+            elements.imageCanvas.addEventListener('mousedown', handleCanvasClick);
+            elements.imageCanvas.addEventListener('mousemove', handleCanvasMouseMove);
+            elements.imageCanvas.addEventListener('mouseup', handleCanvasMouseUp);
+            elements.imageCanvas.addEventListener('mouseleave', handleCanvasMouseUp);
+            
+            // Button event listeners
+            elements.automaticBtn.addEventListener('click', () => setPromptMode('automatic'));
+            elements.clickPromptBtn.addEventListener('click', () => setPromptMode('click'));
+            elements.boxPromptBtn.addEventListener('click', () => setPromptMode('box'));
+            
+            elements.resetBtn.addEventListener('click', resetApplication);
+            elements.extractBtn.addEventListener('click', extractContours);
+            
+            elements.viewOverlayBtn.addEventListener('click', () => {
+                if (state.currentJobId) {
+                    window.open(`${CONFIG.extractionApiUrl}/overlay/${state.currentJobId}`);
+                }
+            });
+            
+            elements.viewMaskBtn.addEventListener('click', () => {
+                if (state.currentJobId) {
+                    window.open(`${CONFIG.extractionApiUrl}/mask/${state.currentJobId}`);
+                }
+            });
+            
+            elements.editContoursBtn.addEventListener('click', () => {
+                if (state.currentJobId) {
+                    window.open(`${CONFIG.editorApiUrl}/?job_id=${state.currentJobId}`);
+                }
+            });
+            
+            elements.downloadMaskBtn.addEventListener('click', downloadMask);
+            
+            // Set initial prompt mode
+            setPromptMode('automatic');
+            
+            console.log('Application initialized');
+        }
+        
+        // Initialize app when DOM is loaded
+        document.addEventListener('DOMContentLoaded', initApp);
+    </script>
+</body>
+</html>

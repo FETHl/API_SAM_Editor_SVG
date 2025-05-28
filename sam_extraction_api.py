@@ -2,7 +2,7 @@
 """
 SAM Extraction API - First part of the two-API architecture
 Handles contour extraction and refinement with SAM and CRF
-Enhanced memory-optimized version that implements advanced CUDA memory management
+Enhanced memory-optimized version that implements advanced CUDA memory management with FP32 precision
 """
 
 import os
@@ -43,7 +43,7 @@ if torch.cuda.is_available():
     # Set memory split size to avoid CUDA OOM errors
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128,expandable_segments:True"
     
-    # Use a percentage of available GPU memory - reduced from before
+    # Use a percentage of available GPU memory
     try:
         import gc
         gc.collect()
@@ -51,7 +51,7 @@ if torch.cuda.is_available():
         
         # For older PyTorch versions
         if hasattr(torch.cuda, 'set_per_process_memory_fraction'):
-            torch.cuda.set_per_process_memory_fraction(0.9)  # Reduced from 0.8
+            torch.cuda.set_per_process_memory_fraction(0.8)  # Use 80% of GPU memory
             
     except Exception as e:
         logger.warning(f"Could not set CUDA memory fraction: {e}")
@@ -104,7 +104,8 @@ app.config.update(
     # Memory optimization settings
     MAX_IMAGE_SIDE=int(os.environ.get('MAX_IMAGE_SIDE', 1024)),  # Max image dimension for processing
     MAX_IMAGE_PIXELS=int(os.environ.get('MAX_IMAGE_PIXELS', 1000000)),  # Max pixels (width*height)
-    USE_HALF_PRECISION=os.environ.get('USE_HALF_PRECISION', 'true').lower() == 'true'
+    # Force FP32 precision - never use half precision
+    USE_HALF_PRECISION=False
 )
 
 # Create necessary directories
@@ -118,7 +119,7 @@ for folder in [
     os.makedirs(folder, exist_ok=True)
 
 class SAMExtractor:
-    """SAM-based contour extraction with CRF refinement - Memory optimized"""
+    """SAM-based contour extraction with CRF refinement - Memory optimized with FP32 precision"""
     
     def __init__(self, sam_checkpoint=None, model_type="vit_h", device=None):
         """Initialize the SAM Extractor - but don't load model yet"""
@@ -130,23 +131,23 @@ class SAMExtractor:
         self.model_type = model_type
         
         # Current date & user - UPDATED with provided values
-        self.date = "2025-05-26 14:06:31"  # Updated timestamp
+        self.date = "2025-05-27 10:12:00"  # Updated timestamp
         self.user = "FETHl"  # Updated user login
         
         # Memory tracking
         self.last_image_size = None
         self.fallback_mode = False
-        self.use_half_precision = app.config['USE_HALF_PRECISION']
+        self.use_half_precision = False  # Always false - force FP32 precision
         
         # Set device (CPU or CUDA)
         if device is None:
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.device = "cpu" if torch.cuda.is_available() else "cuda"
         else:
             self.device = device
             
         # Flag to track if model is loaded
         self.model_loaded = False
-        logger.info(f"SAM Extractor initialized (model will be loaded on demand)")
+        logger.info(f"SAM Extractor initialized (model will be loaded on demand) with FP32 precision")
     
     def is_model_loaded(self):
         """Check if the model is currently loaded"""
@@ -204,18 +205,23 @@ class SAMExtractor:
                 # Calculate free memory with a safety margin
                 free_mem = total_gpu_mem - allocated_mem - 0.5  # Leave 0.5GB safety margin
                 
-                # Estimate maximum number of pixels based on memory (empirical formula)
-                # This relationship depends on model complexity, but here's a rough estimate
-                if free_mem <= 1.0:
-                    return 500000  # < 1GB: ~708x708px
-                elif free_mem <= 2.0:
-                    return 800000  # < 2GB: ~894x894px
-                elif free_mem <= 4.0:
-                    return 1000000  # < 4GB: ~1000x1000px
-                elif free_mem <= 8.0:
-                    return 1500000  # < 8GB: ~1225x1225px
-                else:
-                    return 2000000  # > 8GB: ~1414x1414px
+                # Adjusted values for FP32 precision on different memory sizes
+                if total_gpu_mem < 6.0:  # For GPUs with less than 6GB VRAM
+                    if free_mem <= 1.0:
+                        return 300000  # ~550x550px
+                    elif free_mem <= 2.0:
+                        return 500000  # ~700x700px  
+                    else:
+                        return 650000  # ~800x800px
+                else:  # For GPUs with 6GB+ VRAM
+                    if free_mem <= 2.0:
+                        return 600000  # ~775x775px
+                    elif free_mem <= 4.0:
+                        return 800000  # ~895x895px
+                    elif free_mem <= 8.0:
+                        return 1200000  # ~1095x1095px
+                    else:
+                        return 1600000  # ~1265x1265px
             else:
                 return app.config['MAX_IMAGE_PIXELS']  # Default value
         except Exception as e:
@@ -223,7 +229,7 @@ class SAMExtractor:
             return app.config['MAX_IMAGE_PIXELS']  # Default value
     
     def load_sam_model(self):
-        """Load the SAM model from checkpoint - only when needed"""
+        """Load the SAM model from checkpoint - only when needed, using FP32 precision"""
         # If model already loaded, do nothing
         if self.is_model_loaded():
             logger.info("SAM model already loaded, skipping load")
@@ -243,27 +249,27 @@ class SAMExtractor:
                     logger.error(f"SAM checkpoint not found: {checkpoint_path}")
                     return False
             
-            logger.info(f"Loading SAM model from {checkpoint_path}...")
+            logger.info(f"Loading SAM model from {checkpoint_path} with FP32 precision...")
             
             # Clear cache before loading to ensure maximum available memory
             if self.device == "cuda":
                 torch.cuda.empty_cache()
                 gc.collect()
             
-            # Load the model
-            sam = sam_model_registry[self.model_type](checkpoint=checkpoint_path)
-            sam.to(device=self.device)
-            
-            # Apply half-precision if configured
-            if self.device == "cuda" and self.use_half_precision:
-                try:
-                    # Convert model to half precision (FP16)
-                    sam = sam.half()
-                    logger.info("Using half precision (FP16) for lower memory usage")
-                    self.use_half_precision = True
-                except Exception as e:
-                    logger.warning(f"Failed to convert model to half precision: {e}")
-                    self.use_half_precision = False
+            # Load the model with explicit FP32 precision
+            # Use the newer recommended syntax for autocast
+            with torch.amp.autocast('cuda', enabled=False):
+                sam = sam_model_registry[self.model_type](checkpoint=checkpoint_path)
+                sam.to(device=self.device)
+                
+                # Ensure model is in full precision
+                sam = sam.float()
+                logger.info("Using full precision (FP32) for better accuracy")
+                
+                # Verify model is using FP32
+                for param in sam.parameters():
+                    if param.dtype != torch.float32:
+                        param.data = param.data.float()
             
             self.sam_model = sam
             self.predictor = SamPredictor(sam)
@@ -271,7 +277,7 @@ class SAMExtractor:
             # Initialize mask generator with memory-efficient settings
             self.mask_generator = SamAutomaticMaskGenerator(
                 model=sam,
-                points_per_side=16,         # Reduced from 32/24 to save memory
+                points_per_side=16,         # Reduced from 32 to save memory
                 points_per_batch=64,        # Reduce batch size to save memory
                 pred_iou_thresh=0.86,
                 stability_score_thresh=0.92,
@@ -286,7 +292,7 @@ class SAMExtractor:
             # Reset fallback mode
             self.fallback_mode = False
             
-            logger.info(f"SAM model loaded successfully on {self.device}")
+            logger.info(f"SAM model loaded successfully on {self.device} with FP32 precision")
             return True
         except Exception as e:
             logger.error(f"Error loading SAM model: {str(e)}")
@@ -398,8 +404,10 @@ class SAMExtractor:
                     torch.cuda.empty_cache()
                     gc.collect()
                 
-                with torch.no_grad():  # Ensure no gradients tracked for memory efficiency
-                    masks = self.mask_generator.generate(processed_image)
+                # Disable any automatic mixed precision during processing
+                with torch.amp.autocast('cuda', enabled=False):
+                    with torch.no_grad():  # Ensure no gradients tracked for memory efficiency
+                        masks = self.mask_generator.generate(processed_image)
                     
                 logger.info(f"SAM generated {len(masks)} masks")
             except RuntimeError as e:
@@ -514,12 +522,8 @@ class SAMExtractor:
         """
         # Load model if not already loaded
         if not self.is_model_loaded():
-            if not self.load_sam_model():
-                logger.warning("SAM predictor not available for point prompts. Using default mask.")
-                result = self._create_default_mask(image, points)
-                if app.config['UNLOAD_MODEL_AFTER_USE']:
-                    self.unload_model()
-                return result
+            logger.warning("SAM predictor not available for point prompts. Using automatic segmentation.")
+            return self.segment_automatic(image)
         
         try:
             # Check image dimensions
@@ -544,28 +548,27 @@ class SAMExtractor:
                 scaled_points = input_points
             
             try:
-                # Set the image in SAM
-                self.predictor.set_image(processed_image)
+                # Set the image in SAM with explicit FP32 precision
+                with torch.amp.autocast('cuda', enabled=False):  # Ensure FP32 precision
+                    self.predictor.set_image(processed_image)
                 
                 # Free memory before prediction
                 if self.device == "cuda":
                     torch.cuda.empty_cache()
                     gc.collect()
                 
-                # Get the mask prediction
-                with torch.no_grad():  # Ensure no gradients tracked for memory efficiency
-                    masks, scores, _ = self.predictor.predict(
-                        point_coords=scaled_points,
-                        point_labels=input_labels,
-                        multimask_output=True  # Get multiple mask predictions
-                    )
+                # Get the mask prediction with explicit FP32 precision
+                with torch.amp.autocast('cuda', enabled=False):  # Ensure FP32 precision
+                    with torch.no_grad():  # Ensure no gradients tracked for memory efficiency
+                        masks, scores, _ = self.predictor.predict(
+                            point_coords=scaled_points,
+                            point_labels=input_labels,
+                            multimask_output=True  # Get multiple mask predictions
+                        )
             except Exception as e:
                 logger.error(f"Error in point segmentation: {e}")
-                # Fall back to creating a simple mask
-                result = self._create_default_mask(image, points)
-                if app.config['UNLOAD_MODEL_AFTER_USE']:
-                    self.unload_model()
-                return result
+                # Fall back to automatic segmentation
+                return self.segment_automatic(image)
             
             # Store masks for contour extraction
             self.sam_masks = []
@@ -603,10 +606,8 @@ class SAMExtractor:
                 return result
             else:
                 logger.warning("No masks generated from points")
-                result = self._create_default_mask(image, points)
-                if app.config['UNLOAD_MODEL_AFTER_USE']:
-                    self.unload_model()
-                return result
+                # Fall back to automatic segmentation
+                return self.segment_automatic(image)
                 
         except Exception as e:
             logger.error(f"Error in point segmentation: {str(e)}")
@@ -621,7 +622,8 @@ class SAMExtractor:
             if app.config['UNLOAD_MODEL_AFTER_USE']:
                 self.unload_model()
                 
-            return self._create_default_mask(image, points)
+            # Fall back to automatic segmentation
+            return self.segment_automatic(image)
     
     def _create_default_mask(self, image, points=None):
         """Create a default mask when segmentation fails"""
@@ -654,14 +656,8 @@ class SAMExtractor:
         """
         # Load model if not already loaded
         if not self.is_model_loaded():
-            if not self.load_sam_model():
-                logger.warning("SAM predictor not available for box prompts. Using box fill.")
-                # Create a mask from the box area
-                mask = np.zeros((image.shape[0], image.shape[1]), dtype=np.uint8)
-                x1, y1 = int(box[0][0]), int(box[0][1])
-                x2, y2 = int(box[1][0]), int(box[1][1])
-                mask[y1:y2, x1:x2] = 255
-                return mask > 0
+            logger.warning("SAM predictor not available for box prompts. Using automatic segmentation.")
+            return self.segment_automatic(image)
         
         try:
             # Check image dimensions
@@ -681,34 +677,28 @@ class SAMExtractor:
                 scaled_box = input_box
             
             try:
-                # Set the image in SAM
-                self.predictor.set_image(processed_image)
+                # Set the image in SAM with explicit FP32 precision
+                with torch.amp.autocast('cuda', enabled=False):
+                    self.predictor.set_image(processed_image)
                 
                 # Free memory before prediction
                 if self.device == "cuda":
                     torch.cuda.empty_cache()
                     gc.collect()
                 
-                # Get the mask prediction
-                with torch.no_grad():  # Ensure no gradients tracked for memory efficiency
-                    masks, scores, _ = self.predictor.predict(
-                        point_coords=None,
-                        point_labels=None,
-                        box=scaled_box[None, :],
-                        multimask_output=True  # Get multiple mask predictions
-                    )
+                # Get the mask prediction with explicit FP32 precision
+                with torch.amp.autocast('cuda', enabled=False):
+                    with torch.no_grad():  # Ensure no gradients tracked for memory efficiency
+                        masks, scores, _ = self.predictor.predict(
+                            point_coords=None,
+                            point_labels=None,
+                            box=scaled_box[None, :],
+                            multimask_output=True  # Get multiple mask predictions
+                        )
             except Exception as e:
                 logger.error(f"Error in box segmentation: {e}")
-                # Create a mask from the box area
-                mask = np.zeros((height, width), dtype=np.uint8)
-                x1, y1, x2, y2 = map(int, input_box)
-                mask[y1:y2, x1:x2] = 255
-                
-                # Unload model after processing if configured
-                if app.config['UNLOAD_MODEL_AFTER_USE']:
-                    self.unload_model()
-                    
-                return mask > 0
+                # Fall back to automatic segmentation
+                return self.segment_automatic(image)
             
             # Store masks for contour extraction
             self.sam_masks = []
@@ -746,16 +736,9 @@ class SAMExtractor:
                     
                 return result
             else:
-                # Create a mask from the box area
-                mask = np.zeros((height, width), dtype=np.uint8)
-                x1, y1, x2, y2 = map(int, input_box)
-                mask[y1:y2, x1:x2] = 255
-                
-                # Unload model after processing if configured
-                if app.config['UNLOAD_MODEL_AFTER_USE']:
-                    self.unload_model()
-                    
-                return mask > 0
+                logger.warning("No masks generated from box")
+                # Fall back to automatic segmentation
+                return self.segment_automatic(image)
                 
         except Exception as e:
             logger.error(f"Error in box segmentation: {str(e)}")
@@ -770,12 +753,9 @@ class SAMExtractor:
             if app.config['UNLOAD_MODEL_AFTER_USE']:
                 self.unload_model()
                 
-            # Create a mask from the box area
-            mask = np.zeros((height, width), dtype=np.uint8)
-            x1, y1, x2, y2 = map(int, input_box)
-            mask[y1:y2, x1:x2] = 255
-            return mask > 0
-    
+            # Fall back to automatic segmentation
+            return self.segment_automatic(image)
+            
     def refine_edges(self, image, mask):
         """
         Refine the edges of a mask using CRF (if available) or morphological operations
@@ -804,6 +784,7 @@ class SAMExtractor:
                 return self._apply_crf(image, binary_mask)
             except Exception as e:
                 logger.warning(f"CRF application error: {str(e)}")
+                logger.warning(traceback.format_exc())
                 # Return original mask on failure
                 return mask > 0
         
@@ -852,22 +833,14 @@ class SAMExtractor:
                 
             h, w = mask.shape[:2]
             
-            # Explicitly ensure mask only contains 0 and 1 values
-            mask_labels = (mask > 0).astype(np.uint8)
+            # FIX: Make absolutely sure the mask only contains 0 and 1 values
+            # This fixes the "index 255 is out of bounds for axis 0 with size 2" error
+            mask_labels = np.zeros_like(mask)
+            mask_labels[mask > 0] = 1
             
             # Double-check unique values
             unique_values = np.unique(mask_labels)
             logger.info(f"Mask labels min: {mask_labels.min()}, max: {mask_labels.max()}, unique: {unique_values}")
-            
-            # Make absolutely sure there are only 0 and 1 values by clipping
-            if np.max(unique_values) > 1:
-                mask_labels = np.clip(mask_labels, 0, 1)
-                logger.info(f"Clipped mask values, now min: {mask_labels.min()}, max: {mask_labels.max()}")
-            
-            # Fix for issue with 255 value in mask
-            if np.any(mask_labels == 255):
-                logger.warning("Found 255 values in mask, converting to 1")
-                mask_labels[mask_labels == 255] = 1
             
             # Create CRF with the image dimensions
             d = dcrf.DenseCRF2D(w, h, 2)  # 2 labels: fg and bg
@@ -889,7 +862,7 @@ class SAMExtractor:
             # Add another pairwise term (Potts model)
             # This penalizes small isolated regions
             d.addPairwiseEnergy(
-                np.ones((h, w), dtype=np.float32),
+                np.ones(w*h, dtype=np.float32),  # Flattened array of correct size
                 compat=3,
                 kernel=dcrf.DIAG_KERNEL,
                 normalization=dcrf.NORMALIZE_SYMMETRIC
@@ -905,6 +878,7 @@ class SAMExtractor:
             
         except Exception as e:
             logger.warning(f"CRF application error: {str(e)}")
+            logger.warning(traceback.format_exc())
             # Return original mask on failure
             return mask > 0
 
@@ -926,7 +900,7 @@ class SAMExtractor:
         logger.info(f"Extracting contours from mask: shape={mask.shape}, " 
                    f"min={np.min(mask)}, max={np.max(mask)}")
         
-        # Create debug image
+        # Create debug image for visualization
         height, width = mask.shape[:2]
         debug_image = np.zeros((height, width, 3), dtype=np.uint8)
         
@@ -976,6 +950,13 @@ class SAMExtractor:
                     'color': contour_data['color'],
                     'area': contour_data['area']
                 })
+            
+            # Save a debug image to help diagnose the issue
+            cv2.rectangle(debug_image, (x1, y1), (x2, y2), (0, 0, 255), 2)
+            cv2.circle(debug_image, (center_x, center_y), radius, (0, 255, 0), 2)
+            debug_path = os.path.join(app.config['RESULT_FOLDER'], f"contour_debug_{uuid.uuid4().hex[:8]}.png")
+            cv2.imwrite(debug_path, debug_image)
+            logger.info(f"Saved contour debug image to {debug_path}")
             
             return all_contours
         
@@ -1053,6 +1034,9 @@ class SAMExtractor:
                             'area': float(area)
                         })
                         
+                        # For debugging
+                        cv2.drawContours(debug_image, [approx], -1, cv_color, 1)
+                        
                         contour_id += 1
                         
                 except Exception as e:
@@ -1062,7 +1046,7 @@ class SAMExtractor:
         
         # 2. If no contours from individual masks, try with the combined mask
         if len(all_contours) == 0:
-            logger.info("No contours from individual masks, using combined mask")
+            logger.info("Falling back to combined mask contour extraction")
             
             # Make sure the mask has full range for good contour detection
             normalized_mask = cv2.normalize(binary_mask, None, 0, 255, cv2.NORM_MINMAX)
@@ -1142,6 +1126,7 @@ class SAMExtractor:
                     hue = (contour_id * 137.5) % 360
                     r, g, b = colorsys.hsv_to_rgb(hue/360, 0.8, 0.9)
                     color = [float(r), float(g), float(b)]
+                    cv_color = (int(r*255), int(g*255), int(b*255))
                     
                     # Add to results
                     all_contours.append({
@@ -1154,11 +1139,14 @@ class SAMExtractor:
                         'area': float(area)
                     })
                     
+                    # For debugging
+                    cv2.drawContours(debug_image, [approx], -1, cv_color, 1)
+                    
                     contour_id += 1
         
         # 3. Last resort: create default contours if none were found
         if len(all_contours) == 0:
-            logger.warning("No contours found by any method, creating default contours")
+            logger.warning("Creating fallback rectangular contour")
             
             # Create a border rectangle
             margin = 20
@@ -1179,27 +1167,13 @@ class SAMExtractor:
                 'area': float((width-2*margin) * (height-2*margin))
             })
             
-            # Add another shape inside
-            center_x, center_y = width // 2, height // 2
-            inner_w, inner_h = width // 3, height // 3
-            inner_x1 = center_x - inner_w // 2
-            inner_y1 = center_y - inner_h // 2
-            inner_points = [
-                [inner_x1, inner_y1],
-                [inner_x1 + inner_w, inner_y1],
-                [inner_x1 + inner_w, inner_y1 + inner_h],
-                [inner_x1, inner_y1 + inner_h]
-            ]
-            
-            all_contours.append({
-                'id': 1,
-                'mask_id': 0,
-                'points': inner_points,
-                'is_external': True,
-                'parent_idx': -1,
-                'color': [0.2, 0.8, 0.2],  # Green
-                'area': float(inner_w * inner_h)
-            })
+            # Draw to debug image
+            cv2.rectangle(debug_image, (margin, margin), (width-margin, height-margin), (0, 0, 255), 2)
+        
+        # Save debug image
+        debug_path = os.path.join(app.config['RESULT_FOLDER'], f"contour_debug_{uuid.uuid4().hex[:8]}.png")
+        cv2.imwrite(debug_path, debug_image)
+        logger.info(f"Saved contour debug image to {debug_path}")
         
         logger.info(f"Returning {len(all_contours)} contours")
         return all_contours
@@ -1616,7 +1590,7 @@ def extract_contours():
             "contours": contours,
             "mask_base64": mask_b64,
             "metadata": {
-                "date": "2025-05-27 07:15:44",  # Updated timestamp
+                "date": "2025-05-27 10:12:00",  # Updated timestamp
                 "user": "FETHl",  # Updated user
                 "prompt_type": prompt_type,
                 "refinement": bool(refine_edges),
@@ -1676,6 +1650,8 @@ def extract_contours():
             gc.collect()
             
         return jsonify({"error": str(e)}), 500
+    
+
 
 @app.route('/mask/<job_id>', methods=['GET'])
 def get_mask(job_id):
@@ -1782,7 +1758,7 @@ def get_contours(job_id):
     if 'metadata' not in contours_data:
         contours_data['metadata'] = {}
     
-    contours_data['metadata']['date'] = "2025-05-27 07:15:44"
+    contours_data['metadata']['date'] = "2025-05-27 10:12:00"
     contours_data['metadata']['user'] = "FETHl"
         
     return jsonify(contours_data)
@@ -1810,7 +1786,7 @@ def copy_contours_to_editor(job_id):
         if 'metadata' not in contours_data:
             contours_data['metadata'] = {}
             
-        contours_data['metadata']['date'] = "2025-05-27 07:15:44"
+        contours_data['metadata']['date'] = "2025-05-27 10:12:00"
         contours_data['metadata']['user'] = "FETHl"
         
         # Copy to editor contours directory
@@ -1915,7 +1891,7 @@ def regenerate_mask_from_contours_endpoint(job_id):
             return jsonify({"error": "Failed to save regenerated mask"}), 500
         
         # Update metadata in contours file
-        data['metadata']['date'] = "2025-05-27 07:15:44"
+        data['metadata']['date'] = "2025-05-27 10:12:00"
         data['metadata']['user'] = "FETHl"
         data['metadata']['regenerated'] = True
         
@@ -1928,7 +1904,7 @@ def regenerate_mask_from_contours_endpoint(job_id):
             with open(editor_contours_path, 'r') as f:
                 editor_data = json.load(f)
             
-            editor_data['metadata']['date'] = "2025-05-27 07:15:44"
+            editor_data['metadata']['date'] = "2025-05-27 10:12:00"
             editor_data['metadata']['user'] = "FETHl"
             editor_data['metadata']['regenerated'] = True
             
@@ -2004,12 +1980,13 @@ def regenerate_overlay(job_id):
     return save_success
 
 if __name__ == '__main__':
-    # Update date and user
-    extractor.date = "2025-05-27 07:15:44"
+        # Update date and user
+    extractor.date = "2025-05-27 10:12:00"  # Updated with latest timestamp
     extractor.user = "FETHl"
     
     logger.info(f"Starting SAM Extraction API (memory-optimized) with date: {extractor.date}, user: {extractor.user}")
     logger.info(f"Model will be loaded on demand: {app.config['UNLOAD_MODEL_AFTER_USE']}")
+    logger.info("Using FP32 precision for all operations (FP16/mixed precision disabled)")
     
     # Use threaded server for better performance
     app.run(
